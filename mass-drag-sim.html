@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<html>
+
+<head>
+    <meta charset="UTF-8" />
+    <title>質点-粘性抵抗-加速度入力</title>
+    <style>
+        body {
+            margin: 0;
+        }
+
+        canvas {
+            background: #1d2330;
+            display: block;
+            cursor: grab;
+            border: 1px solid #afafaf;
+        }
+
+        input[type="range"] {
+            width: 400px;
+            /* スライダーの幅 */
+        }
+    </style>
+</head>
+
+<body>
+
+    <canvas id="simulationCanvas"></canvas>
+    <button id="resetBtn">リセット</button>
+    <button id="pControlBtn">P制御: OFF</button>
+    <button id="dControlBtn">D制御: OFF</button>
+    <br>
+    加速度: <input type="range" id="accelerationSlider" min="-25" max="25" value="0" step="0.1"> <span
+        id="accelerationValue">0</span>
+    <br>
+    斜面角度: <input type="text" id="slopeAngleInput" value="0" size="5"> 度
+    <br>
+    Pゲイン: <input type="text" id="pGainInput" value="0" size="5">
+    Dゲイン: <input type="text" id="dGainInput" value="0" size="5">
+
+
+
+
+    <script>const canvas = document.getElementById('simulationCanvas');
+        const ctx = canvas.getContext('2d');
+        const accelerationSlider = document.getElementById('accelerationSlider');
+        const accelerationValueDisplay = document.getElementById('accelerationValue');
+        const slopeAngleInput = document.getElementById('slopeAngleInput');
+        const resetBtn = document.getElementById("resetBtn");
+        const autoControlBtn = document.getElementById("autoControlBtn");
+        const pControlBtn = document.getElementById("pControlBtn");
+        const dControlBtn = document.getElementById("dControlBtn");
+        const pGainInput = document.getElementById('pGainInput');
+        const dGainInput = document.getElementById('dGainInput');
+        
+        // キャンバスのサイズを設定
+        canvas.width = 600;
+        canvas.height = 200;
+        
+        // 斜面の角度 (初期値はテキストボックスの値から取得)
+        let slopeAngle = parseFloat(slopeAngleInput.value) * Math.PI / 180;
+        
+        let pGain = parseFloat(pGainInput.value);
+        let dGain = parseFloat(dGainInput.value);
+        
+        const dt = 0.02;
+        // 物体の初期状態
+        const targetX = 400; // 目標位置
+        let x = 100;       // 斜面上の初期位置
+        let y = calculateY(x); // 初期y座標
+        let error = targetX - getCanvasX(x);
+        let intError = 0;
+        const objectRadius = 15;
+        const numberOfSides = 3;
+        const mass = 1;
+        let velocity = 0; // 斜面に沿った初期速度
+        let accelerationInput = 0; // ユーザーが入力する加速度
+        const gravity = 20; // 重力加速度
+        const frictionCoefficient = 0; // 動摩擦係数
+        const dragCoefficient = 0.1;
+        
+        // ドラッグ関連の状態
+        let isDragging = false;
+        let offsetXOnSlope; // 斜面に沿ったオフセット
+        
+        // スライダーの初期値を表示
+        accelerationValueDisplay.textContent = accelerationSlider.value;
+        
+        // リセットボタン
+        resetBtn.addEventListener("click", resetState);
+        function resetState() {
+            x = 50;     // 初期位置
+            y = calculateY(x);
+            velocity = 0;   // 初期速度
+            intError = 0;
+            accelerationSlider.value = 0;
+            accelerationInput = parseFloat(accelerationSlider.value);
+            accelerationValueDisplay.textContent = accelerationInput.toFixed(1);
+        }
+        
+        // 自動制御ボタン
+        let pControl;
+        let iControl;
+        let dControl;
+        pControlBtn.addEventListener("click", () => {
+            pControl = !pControl;
+            pControlBtn.textContent = `P制御: ${pControl ? "ON" : "OFF"}`;
+        });
+        dControlBtn.addEventListener("click", () => {
+            dControl = !dControl;
+            dControlBtn.textContent = `D制御: ${dControl ? "ON" : "OFF"}`;
+        });
+        
+        // 加速度スライダーの値が変更されたときの処理
+        accelerationSlider.addEventListener('input', () => {
+            accelerationInput = parseFloat(accelerationSlider.value);
+            accelerationValueDisplay.textContent = accelerationInput.toFixed(1);
+        });
+        
+        // テキストボックスの値が変更されたときの処理
+        slopeAngleInput.addEventListener('input', () => {
+            const newAngle = parseFloat(slopeAngleInput.value);
+            if (!isNaN(newAngle)) {
+                slopeAngle = newAngle * Math.PI / 180;
+            }
+        });
+        pGainInput.addEventListener('input', () => {
+            const newgain = parseFloat(pGainInput.value);
+            if (!isNaN(newgain)) {
+                pGain = newgain;
+            }
+        });
+        dGainInput.addEventListener('input', () => {
+            const newgain = parseFloat(dGainInput.value);
+            if (!isNaN(newgain)) {
+                dGain = newgain;
+            }
+        });
+        
+        // 斜面上のy座標を計算する関数
+        function calculateY(xOnSlope) {
+            return canvas.height - 30 - xOnSlope * Math.sin(slopeAngle);
+        }
+        
+        // 斜面上のx座標をキャンバスの水平方向のx座標に変換する関数
+        function getCanvasX(xOnSlope) {
+            return xOnSlope * Math.cos(slopeAngle);
+        }
+        
+        // 斜面上のマウス座標を取得する関数
+        function getSlopeCoordinates(canvasX, canvasY) {
+            const relativeY = canvas.height - 30 - canvasY;
+            return canvasX * Math.cos(slopeAngle) + relativeY * Math.sin(slopeAngle);
+        }
+        
+        // マウスが押されたときの処理
+        canvas.addEventListener('mousedown', (e) => {
+            const canvasMouseX = e.clientX - canvas.getBoundingClientRect().left;
+            const canvasMouseY = e.clientY - canvas.getBoundingClientRect().top;
+            const slopeMouseX = getSlopeCoordinates(canvasMouseX, canvasMouseY);
+        
+            const canvasObjectX = getCanvasX(x);
+            const canvasObjectY = calculateY(x);
+            const distance = Math.sqrt((canvasMouseX - canvasObjectX) ** 2 + (canvasMouseY - canvasObjectY) ** 2);
+        
+            if (distance < objectRadius) {
+                isDragging = true;
+                offsetXOnSlope = slopeMouseX - x;
+                canvas.style.cursor = 'grabbing';
+                velocity = 0;
+            }
+        });
+        
+        // マウスが移動したときの処理
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const canvasMouseX = e.clientX - canvas.getBoundingClientRect().left;
+            const canvasMouseY = e.clientY - canvas.getBoundingClientRect().top;
+            const slopeMouseX = getSlopeCoordinates(canvasMouseX, canvasMouseY);
+            x = slopeMouseX - offsetXOnSlope;
+        
+            const slopeLength = canvas.width / Math.cos(slopeAngle);
+            if (x < objectRadius) {
+                x = objectRadius;
+            } else if (x > slopeLength - objectRadius) {
+                x = slopeLength - objectRadius;
+            }
+            y = calculateY(x);
+        });
+        
+        // マウスが離されたときの処理
+        canvas.addEventListener('mouseup', () => {
+            if (!isDragging) return;
+            isDragging = false;
+            canvas.style.cursor = 'grab';
+        });
+        
+        // マウスがキャンバスの外に出たときの処理（ドラッグ解除）
+        canvas.addEventListener('mouseout', () => {
+            if (isDragging) {
+                isDragging = false;
+                canvas.style.cursor = 'grab';
+            }
+        });
+        
+        function drawPolygon(centerX, centerY, radius, sides) {
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY);
+        
+            for (let i = 0; i < sides; i++) {
+                const angle = (i / sides) * 2 * Math.PI;
+                const vertexX = centerX + radius * Math.cos(angle);
+                const vertexY = centerY + radius * Math.sin(angle);
+                if (i === 0) {
+                    ctx.moveTo(vertexX, vertexY);
+                } else {
+                    ctx.lineTo(vertexX, vertexY);
+                }
+            }
+            ctx.closePath();
+            ctx.fillStyle = 'white';
+            ctx.fill();
+        }
+        
+        function drawCircle(centerX, centerY, radius) {
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+            ctx.fillStyle = 'white';
+            ctx.fill();
+            ctx.closePath();
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, 3, 0, Math.PI * 2);
+            ctx.fillStyle = 'red';
+            ctx.fill();
+            ctx.closePath();
+        }
+        
+        function autoControl() {
+            let ctrlInput = 0;
+            if (pControl) {
+                ctrlInput += pGain * error;
+            }
+            if (dControl) {
+                ctrlInput += dGain * (- velocity);
+            }
+            return ctrlInput;
+        }
+        
+        function update() {
+            // テキストボックスの値に基づいて斜面角度を更新
+            const newAngle = parseFloat(slopeAngleInput.value);
+            if (!isNaN(newAngle)) {
+                slopeAngle = newAngle * Math.PI / 180;
+            }
+        
+            if (!isDragging) {
+                const gravityComponent = - mass * gravity * Math.sin(slopeAngle);
+                const normalForce = mass * gravity * Math.cos(slopeAngle);
+                let frictionForce = frictionCoefficient * normalForce;
+                if (velocity > 0) {
+                    frictionForce = -frictionForce;
+                }
+        
+                let accel;
+                if (pControl || dControl) {
+                    accelerationSlider.disabled = true;
+                    accel = autoControl();
+                } else {
+                    accelerationSlider.disabled = false;
+                    accel = accelerationInput;
+                }
+                let netForce = gravityComponent + frictionForce + accel - dragCoefficient*velocity;
+        
+                x += velocity * dt;
+                velocity += netForce / mass * dt;
+                error = targetX - getCanvasX(x);
+                intError += error * dt;
+                y = calculateY(x);
+        
+                // const slopeLength = canvas.width / Math.cos(slopeAngle);
+                // if (x + objectRadius > slopeLength || x - objectRadius < 0) {
+                //     velocity *= -0.8;
+                //     if (x + objectRadius > slopeLength) {
+                //         x = slopeLength - objectRadius;
+                //     } else if (x - objectRadius < 0) {
+                //         x = objectRadius;
+                //     }
+                //     y = calculateY(x);
+                // }
+            }
+        
+            // 描画をクリア
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // 目標位置を描画
+            ctx.beginPath();
+            ctx.moveTo(targetX, 0);
+            ctx.lineTo(targetX, canvas.height);
+            ctx.strokeStyle = "#00aa00";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        
+            // 斜面の描画
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height - 30);
+            ctx.lineTo(canvas.width, canvas.height - 30 - canvas.width * Math.tan(slopeAngle));
+            ctx.strokeStyle = 'gray';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.closePath();
+        
+            // 物体の描画
+            const canvasObjectX = getCanvasX(x);
+            const canvasObjectY = y - objectRadius * Math.sin(Math.PI / numberOfSides);
+            // drawPolygon(canvasObjectX, canvasObjectY, objectRadius, numberOfSides);
+            drawCircle(canvasObjectX, canvasObjectY, objectRadius);
+        
+            // 現在位置と速度のテキスト表示
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "14px sans-serif";
+            // ctx.fillText(`位置: ${x.toFixed(1)} px`, 10, 20);
+            ctx.fillText(`位置誤差: ${error.toFixed(1)} px`, 10, 20);
+            ctx.fillText(`速度: ${velocity.toFixed(2)} px/s`, 10, 40);
+        
+            // アニメーションを続ける
+            requestAnimationFrame(update);
+        }
+        
+        // アニメーションを開始
+        update();
+        </script>
+
+</body>
+
+</html>
